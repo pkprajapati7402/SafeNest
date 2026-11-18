@@ -498,6 +498,14 @@ SafeNest AI follows a multi-phase engineering roadmap:
 
 ---
 
+## Local Testing
+```bash
+docker start safenest-app
+
+docker stop safenest-app
+
+```
+
 ## License
 
 This project is distributed under the MIT License. See `LICENSE` for details.
