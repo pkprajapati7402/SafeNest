@@ -70,6 +70,9 @@
 
       <div class="panel-block family-panel">
         <h2>Family Alert</h2>
+        <label class="field-label" for="apiToken">Installation token</label>
+        <input id="apiToken" class="phone-input" type="password"
+           placeholder="Required when SAFE_NEST_API_TOKEN is configured" autocomplete="off">
          <label class="field-label" for="familyPhone">Family phone (saved on server)</label>
         <input id="familyPhone" class="phone-input" type="tel" inputmode="tel"
            placeholder="Configured with FAMILY_PHONE_NUMBER" autocomplete="tel">
@@ -83,8 +86,9 @@
 
       <div class="panel-block panel-note">
         <p>Phase 1 build. Risk score is a placeholder formula (danger weight
-        × on-screen distance) — not yet duration-confirmed or ML-trained.
-        Don't treat alerts here as certain.</p>
+        × normalized proximity) and uses the COCO baseline model. It does not
+        identify children or detect medicines, flames, sockets or chemicals
+        until a custom model is trained. Don't treat alerts as certain.</p>
       </div>
 
     </aside>

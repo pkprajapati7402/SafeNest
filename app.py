@@ -12,6 +12,9 @@ Then open:
 """
 
 import base64
+import binascii
+import hashlib
+import hmac
 import json
 import os
 import re
@@ -52,33 +55,96 @@ from config import (
     CONF_THRESHOLD,
     danger_weight,
     box_center,
-    pixel_distance,
     simple_risk_score,
     risk_label,
 )
 
 app = Flask(__name__, template_folder=".", static_folder=None)
+app.config["MAX_CONTENT_LENGTH"] = 2 * 1024 * 1024
 ALERTS_DIR = os.path.join(app.root_path, "saved_alerts")
 CRITICAL_THRESHOLD = 70
+MODEL_PATH = os.environ.get("SAFE_NEST_MODEL_PATH", "yolov8n.pt")
+MODEL_VERSION = os.path.basename(MODEL_PATH)
+API_TOKEN = os.environ.get("SAFE_NEST_API_TOKEN", "").strip()
 
 print("Loading YOLO model (first run downloads weights automatically)...")
-model = YOLO("yolov8n.pt")
+model = YOLO(MODEL_PATH)
 print("Model loaded.")
 
 
 def decode_image(data_url: str):
     """Turn a 'data:image/jpeg;base64,...' string into a BGR numpy array."""
-    header, b64data = data_url.split(",", 1)
-    img_bytes = base64.b64decode(b64data)
+    if not isinstance(data_url, str) or not data_url.startswith("data:image/"):
+        raise ValueError("image must be a data:image URL")
+    try:
+        _, b64data = data_url.split(",", 1)
+        img_bytes = base64.b64decode(b64data, validate=True)
+    except (ValueError, binascii.Error) as error:
+        raise ValueError("image is not valid base64") from error
+    if len(img_bytes) > 1_500_000:
+        raise ValueError("image is too large")
     arr = np.frombuffer(img_bytes, dtype=np.uint8)
     frame = cv2.imdecode(arr, cv2.IMREAD_COLOR)
     return frame
 
 
+def require_api_token():
+    """Protect state-changing and inference endpoints in configured installs."""
+    if not API_TOKEN:
+        return None
+    supplied = request.headers.get("Authorization", "")
+    expected = f"Bearer {API_TOKEN}"
+    if not hmac.compare_digest(supplied, expected):
+        return jsonify({"error": "installation authentication required"}), 401
+    return None
+
+
+def sign_alert(risk):
+    """Create a short-lived server-issued proof for an alert action."""
+    payload = {
+        "score": round(float(risk["score"]), 1),
+        "label": risk["label"],
+        "object": risk.get("object"),
+        "issued_at": int(time.time()),
+    }
+    encoded = base64.urlsafe_b64encode(
+        json.dumps(payload, separators=(",", ":"), sort_keys=True).encode()
+    ).decode()
+    signature = hmac.new(
+        (API_TOKEN or "local-development-secret").encode(),
+        encoded.encode(),
+        hashlib.sha256,
+    ).hexdigest()
+    return f"{encoded}.{signature}"
+
+
+def verify_alert_token(token):
+    """Verify a server-issued alert proof and reject stale or altered data."""
+    if not isinstance(token, str) or "." not in token:
+        raise ValueError("server-issued alert token is required")
+    encoded, signature = token.rsplit(".", 1)
+    expected = hmac.new(
+        (API_TOKEN or "local-development-secret").encode(),
+        encoded.encode(),
+        hashlib.sha256,
+    ).hexdigest()
+    if not hmac.compare_digest(signature, expected):
+        raise ValueError("invalid alert token")
+    try:
+        payload = json.loads(base64.urlsafe_b64decode(encoded).decode())
+    except (ValueError, UnicodeDecodeError, binascii.Error) as error:
+        raise ValueError("invalid alert token") from error
+    if int(time.time()) - int(payload.get("issued_at", 0)) > 120:
+        raise ValueError("alert token expired")
+    if payload.get("label") != "CRITICAL" or float(payload.get("score", 0)) < CRITICAL_THRESHOLD:
+        raise ValueError("alert token is not critical")
+    return payload
+
+
 def save_alert(data_url: str, risk: dict):
     """Save the alert image and metadata locally for later review."""
     _, b64data = data_url.split(",", 1)
-    image_bytes = base64.b64decode(b64data)
+    image_bytes = base64.b64decode(b64data, validate=True)
     timestamp = datetime.now(timezone.utc).strftime("%Y%m%dT%H%M%S%fZ")
     os.makedirs(ALERTS_DIR, exist_ok=True)
     image_name = f"alert_{timestamp}.jpg"
@@ -140,14 +206,30 @@ def index():
     return render_template("index.html")
 
 
+@app.route("/healthz")
+def healthz():
+    return jsonify({"status": "ok", "model": MODEL_VERSION})
+
+
+@app.route("/readyz")
+def readyz():
+    return jsonify({"ready": model is not None, "model": MODEL_VERSION}), 200 if model is not None else 503
+
+
 @app.route("/detect", methods=["POST"])
 def detect():
+    auth_error = require_api_token()
+    if auth_error:
+        return auth_error
     payload = request.get_json(silent=True) or {}
     data_url = payload.get("image")
     if not data_url:
         return jsonify({"error": "no image provided"}), 400
 
-    frame = decode_image(data_url)
+    try:
+        frame = decode_image(data_url)
+    except ValueError as error:
+        return jsonify({"error": str(error)}), 400
     if frame is None:
         return jsonify({"error": "could not decode image"}), 400
 
@@ -191,7 +273,10 @@ def detect():
         # Both person and dangerous hazard in frame -> proximity-weighted score
         for person_center in persons:
             for class_name, danger_center, weight in dangers:
-                dist = pixel_distance(person_center, danger_center)
+                normalized_person = (person_center[0] / w, person_center[1] / h)
+                normalized_danger = (danger_center[0] / w, danger_center[1] / h)
+                dist = ((normalized_person[0] - normalized_danger[0]) ** 2
+                        + (normalized_person[1] - normalized_danger[1]) ** 2) ** 0.5
                 score = simple_risk_score(weight, dist)
                 if score > best_score:
                     best_score, best_object = score, class_name
@@ -204,23 +289,35 @@ def detect():
                 best_score, best_object = score, class_name
                 best_label = risk_label(score)
 
-    return jsonify({
+    risk = {
+        "score": best_score,
+        "label": best_label,
+        "object": best_object,
+        "has_person": len(persons) > 0,
+    }
+    response = {
         "detections": detections,
-        "risk": {
-            "score": best_score,
-            "label": best_label,
-            "object": best_object,
-            "has_person": len(persons) > 0,
-        },
+        "risk": risk,
         "infer_ms": infer_ms,
-    })
+        "model": MODEL_VERSION,
+    }
+    if best_label == "CRITICAL":
+        response["risk"]["alert_token"] = sign_alert(risk)
+    return jsonify(response)
 
 
 @app.route("/save-alert", methods=["POST"])
 def save_alert_route():
+    auth_error = require_api_token()
+    if auth_error:
+        return auth_error
     payload = request.get_json(silent=True) or {}
     data_url = payload.get("image")
     risk = payload.get("risk") or {}
+    try:
+        verify_alert_token(risk.get("alert_token"))
+    except ValueError as error:
+        return jsonify({"error": str(error)}), 403
     if not data_url or not data_url.startswith("data:image/"):
         return jsonify({"error": "valid alert image is required"}), 400
     try:
@@ -232,9 +329,21 @@ def save_alert_route():
 
 @app.route("/call-family", methods=["POST"])
 def call_family_route():
+    auth_error = require_api_token()
+    if auth_error:
+        return auth_error
     payload = request.get_json(silent=True) or {}
     try:
-        call_info = call_family_member(payload.get("risk") or {})
+        risk = payload.get("risk") or {}
+        if payload.get("manual") is True:
+            verified_risk = {
+                "score": float(CRITICAL_THRESHOLD),
+                "label": "CRITICAL",
+                "object": "manual emergency alert",
+            }
+        else:
+            verified_risk = verify_alert_token(risk.get("alert_token"))
+        call_info = call_family_member(verified_risk)
     except (RuntimeError, ValueError) as error:
         return jsonify({"called": False, "error": str(error)}), 503
     except Exception as error:
