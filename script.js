@@ -19,6 +19,7 @@ const captureBtn = document.getElementById('captureBtn');
 const callBtn = document.getElementById('callBtn');
 const momentStatus = document.getElementById('momentStatus');
 const momentPreview = document.getElementById('momentPreview');
+const apiToken = document.getElementById('apiToken');
 
 const SEND_INTERVAL_MS = 700;
 const JPEG_QUALITY = 0.6;
@@ -38,8 +39,14 @@ let savingAlert = false;
 let cameraStream = null;
 let loopTimer = null;
 let cameraEnabled = true;
+let criticalFrames = 0;
+const REQUIRED_CRITICAL_FRAMES = 3;
 
 familyPhone.value = localStorage.getItem('safenest-family-phone') || '';
+apiToken.value = sessionStorage.getItem('safenest-api-token') || '';
+apiToken.addEventListener('input', () => {
+  sessionStorage.setItem('safenest-api-token', apiToken.value.trim());
+});
 familyPhone.addEventListener('input', () => {
   localStorage.setItem('safenest-family-phone', familyPhone.value.trim());
 });
@@ -190,16 +197,19 @@ function saveMoment() {
 }
 
 function callFamily() {
-  return triggerFamilyCall({ label: 'CRITICAL', score: 70, object: 'manual emergency alert' });
+  return triggerFamilyCall({ label: 'CRITICAL', score: 70, object: 'manual emergency alert' }, true);
 }
 
-async function triggerFamilyCall(risk) {
+async function triggerFamilyCall(risk, manual = false) {
   momentStatus.textContent = 'Calling family member...';
   try {
     const response = await fetch('/call-family', {
       method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ risk }),
+      headers: {
+        'Content-Type': 'application/json',
+        ...(apiToken.value.trim() ? { Authorization: `Bearer ${apiToken.value.trim()}` } : {}),
+      },
+      body: JSON.stringify(manual ? { risk, manual: true } : { risk }),
     });
     const result = await response.json();
     if (!response.ok) throw new Error(result.error || 'call failed');
@@ -236,7 +246,10 @@ async function saveAlertToServer(risk, dataUrl) {
   try {
     const response = await fetch('/save-alert', {
       method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
+      headers: {
+        'Content-Type': 'application/json',
+        ...(apiToken.value.trim() ? { Authorization: `Bearer ${apiToken.value.trim()}` } : {}),
+      },
       body: JSON.stringify({ image: dataUrl, risk }),
     });
     if (!response.ok) throw new Error('save failed');
@@ -262,7 +275,9 @@ function captureBestMoment(risk, dataUrl) {
 }
 
 async function maybeAlertFamily(risk) {
-  if (familyAlerted || risk.label !== 'CRITICAL') return;
+  if (risk.label === 'CRITICAL') criticalFrames += 1;
+  else criticalFrames = 0;
+  if (familyAlerted || criticalFrames < REQUIRED_CRITICAL_FRAMES || !risk.alert_token) return;
   familyAlerted = true;
   speakAlert(risk.object);
   await saveAlertToServer(risk, currentFrameDataUrl);
@@ -323,7 +338,10 @@ async function sendFrame() {
 
     const res = await fetch('/detect', {
       method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
+      headers: {
+        'Content-Type': 'application/json',
+        ...(apiToken.value.trim() ? { Authorization: `Bearer ${apiToken.value.trim()}` } : {}),
+      },
       body: JSON.stringify({ image: dataUrl }),
     });
     if (!res.ok) throw new Error('server error ' + res.status);

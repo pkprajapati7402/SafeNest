@@ -38,7 +38,8 @@
 ## Key Features
 
 - **Real-Time Computer Vision Inference**: Powered by YOLOv8 Nano (`yolov8n.pt`) with optimized CPU inference (~100–180ms per frame).
-- **Proximity-Aware Spatial Risk Engine**: Evaluates Euclidean pixel distance between detected persons and hazards, elevating threat levels when a child moves closer to dangerous items.
+- **Proximity-Aware Spatial Risk Engine**: Uses normalized proximity between detected people and hazards. This is an explainable baseline, not a physical reachability guarantee.
+- **COCO Baseline Honesty**: The checked-in model scores only hazard classes it can actually detect (`knife`, `scissors`, `fork`, `hair drier`, `toaster`, `oven`, and `microwave`). Medicines, flames, sockets, chemicals and stairs require a custom model.
 - **Dynamic Tactical HUD Console**: Hardware-accelerated Canvas overlay rendering corner-bracket bounding boxes, color-coded danger highlights, mirrored horizontal coordinate adjustments, and an animated scanline.
 - **Multimodal Emergency Escalation**:
   - **Auditory Warning**: Client-side text-to-speech synthesize voice alerts: *"Emergency alert. [Hazard] detected. Papa, please help."*
@@ -46,6 +47,7 @@
   - **Zero-Cost Developer Simulation**: Built-in `DEV_TEST_MODE` mocks outbound telecom calls with synthetic Call SIDs without incurring API charges.
   - **Incident Archival**: Automatically captures high-resolution snapshot JPEGs and JSON metadata into `saved_alerts/` for forensic review.
 - **Anti-Spam & Hysteresis Protection**: Integrated 25-second cooldown timer prevents duplicate outbound phone calls while persistent threats remain in view.
+- **Installation Security**: Optional bearer-token protection, request-size validation, server-issued short-lived alert proofs, and health/readiness endpoints protect inference and notification actions.
 - **Production & Cloud Ready**: Fully containerized with Docker and configured with Render blueprints (`render.yaml`) for zero-friction cloud deployment.
 
 ---
@@ -397,6 +399,12 @@ Edit `.env` with your preferred settings:
 # Enable simulated calls for zero-cost testing (no Twilio account needed)
 DEV_TEST_MODE=true
 
+# Optional but recommended for any shared/cloud deployment
+SAFE_NEST_API_TOKEN=replace-with-a-long-random-installation-token
+
+# Optional custom model produced by the GPU training notebook
+SAFE_NEST_MODEL_PATH=yolov8n.pt
+
 # Twilio Voice API Credentials (required only when DEV_TEST_MODE=false)
 TWILIO_ACCOUNT_SID=ACxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx
 TWILIO_AUTH_TOKEN=your_auth_token_here
@@ -489,7 +497,7 @@ The repository includes a ready-to-use Render blueprint ([render.yaml](file:///c
 
 SafeNest AI follows a multi-phase engineering roadmap:
 
-- [x] **Phase 1 (Current)**: Real-time web console, YOLOv8 object detection, spatial Euclidean risk scoring, TTS speech warning, local snapshot archival, Twilio voice integration & dev simulation.
+- [x] **Phase 1 (Current)**: Real-time web console, COCO-compatible YOLOv8 baseline detection, normalized spatial risk scoring, installation-token hardening, server-issued alert proofs, TTS speech warning, local snapshot archival, Twilio voice integration & dev simulation.
 - [ ] **Phase 2 (Child vs. Adult Classification)**: Integrate custom pose estimation (YOLOv8-Pose) to distinguish between young infants/children and supervising adults.
 - [ ] **Phase 3 (Temporal Tracking & Persistence)**: Implement ByteTrack / DeepSORT tracking to calculate hazard dwell time and prevent momentary false triggers.
 - [ ] **Phase 4 (Audio Event Classification)**: Add Web Audio spectral analysis to identify baby crying, screaming, glass breaking, or distress acoustics.

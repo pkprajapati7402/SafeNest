@@ -1,67 +1,54 @@
-"""
-SafeNest AI - Phase 1 config
-Danger weights for classes already available in the pretrained
-YOLO / COCO model (no custom training needed yet).
+"""Configuration for the lightweight COCO baseline.
 
-Scale: 0-100 (used later by the risk engine in Phase 5).
-Feel free to add/remove classes as you test.
+The checked-in ``yolov8n.pt`` baseline can emit only the COCO entries listed
+under ``BASELINE_DANGEROUS_CLASSES``. The additional custom entries are
+reserved for a future trained SafeNest model and are never inferred by the
+baseline weights.
 """
 
 # Classes we treat as the "child/person" side of the risk equation
-PERSON_CLASSES = {"person"}
+PERSON_CLASSES = {"person", "child", "adult"}
 
-# Classes we treat as potentially dangerous, with a base danger weight (0-100).
-# Includes standard COCO classes (pretrained YOLO) and common hazard aliases.
-DANGEROUS_CLASSES = {
-    # Sharp & Cutting Tools
+# Classes present in the COCO label set used by yolov8n.pt.
+BASELINE_DANGEROUS_CLASSES = {
     "knife": 95,
     "scissors": 90,
-    "sharp tool": 90,
-    "tool": 85,
-    "fork": 75,
-
-    # Heat, Fire & Gas Hazards
-    "open flame": 95,
-    "fire": 95,
-    "gas stove": 90,
-    "stove": 90,
-    "burner": 90,
-    "gas burner": 90,
-    "oven": 85,
-    "toaster": 80,
-    "microwave": 75,
-
-    # Electrical Hazards
-    "electrical socket": 90,
-    "socket": 90,
-    "outlet": 90,
-    "battery": 85,
-    "hair drier": 75,
-
-    # Ingestion & Chemical Hazards
-    "medicine": 90,
-    "pill": 90,
-    "pills": 90,
-    "chemical": 85,
-    "cleaning bottle": 85,
-    "chemical bottle": 85,
-    "bottle": 75,  # COCO proxy for chemical/cleaning/medicine bottles
-
-    # Minor hazard proxy
-    "cell phone": 25,
+    "fork": 45,
+    "hair drier": 55,
+    "toaster": 60,
+    "oven": 50,
+    "microwave": 45,
 }
+
+# Classes for the custom SafeNest model. They do not become active until
+# SAFE_NEST_MODEL_PATH points to weights trained with matching labels.
+CUSTOM_DANGEROUS_CLASSES = {
+    "medicine": 90,
+    "chemical": 85,
+    "flame": 95,
+    "open_flame": 95,
+    "outlet": 90,
+    "electrical_socket": 90,
+    "stairs": 70,
+    "open_window": 80,
+}
+
+DANGEROUS_CLASSES = {**BASELINE_DANGEROUS_CLASSES, **CUSTOM_DANGEROUS_CLASSES}
 
 # Everything else we still want to see on screen but don't score as hazard
 NEUTRAL_HIGHLIGHT_CLASSES = {
-    "teddy bear", "chair", "couch", "bed", "dining table", "cup", "bowl", "book", "clock",
+    "bottle", "cell phone", "teddy bear", "chair", "couch", "bed",
+    "dining table", "cup", "bowl", "book", "clock", "sink", "refrigerator",
+    "safety_gate", "crib", "play_mat",
 }
 
 # Minimum detection confidence to accept a box at all
 CONF_THRESHOLD = 0.35
 
-# Pixel-distance thresholds calibrated for 960x720 camera stream
-DIST_HIGH_RISK_PX = 400
-DIST_WARNING_PX = 700
+# Normalized distances are resolution-independent approximations. A calibrated
+# zone/polygon should replace this heuristic when a camera is installed.
+DIST_HIGH_RISK = 0.28
+DIST_WARNING = 0.55
 
 
 def danger_weight(class_name: str) -> int:
@@ -77,14 +64,14 @@ def pixel_distance(p1, p2):
     return ((p1[0] - p2[0]) ** 2 + (p1[1] - p2[1]) ** 2) ** 0.5
 
 
-def simple_risk_score(danger, distance_px):
+def simple_risk_score(danger, distance):
     """
     Risk score calculation based on hazard danger weight and proximity.
     Close or medium range to a child/person escalates to full danger level.
     """
-    if distance_px <= DIST_HIGH_RISK_PX:
+    if distance <= DIST_HIGH_RISK:
         proximity_factor = 1.0
-    elif distance_px <= DIST_WARNING_PX:
+    elif distance <= DIST_WARNING:
         proximity_factor = 0.85
     else:
         proximity_factor = 0.75
